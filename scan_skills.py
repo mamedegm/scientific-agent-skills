@@ -124,6 +124,21 @@ def severity_badge(sev: str) -> str:
     return f"{icons.get(sev, '⚫')} {sev}"
 
 
+def one_line(text: str) -> str:
+    """Join the lines of text with spaces, for a single-line Markdown context."""
+    return " ".join(part.strip() for part in text.splitlines() if part.strip())
+
+
+def quoted_lines(text: str) -> list[str]:
+    """Render text as a block quote nested in a list item, one "  >" per line.
+
+    Every line needs its own marker: an unmarked blank line or a line that
+    starts another block (a list item, a heading) would end the quote and the
+    list item it belongs to.
+    """
+    return [f"  > {line}" if line else "  >" for line in text.splitlines() or [""]]
+
+
 def generate_report(report, run_meta: dict | None = None) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     run_meta = run_meta or {}
@@ -192,16 +207,18 @@ def generate_report(report, run_meta: dict | None = None) -> str:
 
             for finding in result.findings:
                 fsev = finding.severity.value if hasattr(finding.severity, "value") else str(finding.severity)
-                lines.append(f"- **{severity_badge(fsev)}** `{finding.rule_id}` — {finding.title}")
+                lines.append(
+                    f"- **{severity_badge(fsev)}** `{finding.rule_id}` — {one_line(finding.title)}"
+                )
                 if finding.description:
-                    lines.append(f"  > {finding.description}")
+                    lines.extend(quoted_lines(finding.description))
                 if finding.file_path:
                     loc = finding.file_path
                     if finding.line_number:
                         loc += f":{finding.line_number}"
                     lines.append(f"  > File: `{loc}`")
                 if finding.remediation:
-                    lines.append(f"  > **Remediation:** {finding.remediation}")
+                    lines.extend(quoted_lines(f"**Remediation:** {finding.remediation}"))
                 lines.append("")
 
     else:

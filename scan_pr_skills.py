@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 from skill_scanner.core.loader import SkillLoadError
 from skill_scanner.core.models import Report
 
-from scan_skills import build_scanner, severity_badge
+from scan_skills import build_scanner, one_line, quoted_lines, severity_badge
 
 load_dotenv()
 
@@ -161,15 +161,15 @@ def format_comment(report: Report, scanned_dirs: list[Path]) -> str:
                 for finding in result.findings:
                     fsev = _sev_str(finding)
                     lines.append(
-                        f"- **{severity_badge(fsev)}** `{finding.rule_id}` — {finding.title}"
+                        f"- **{severity_badge(fsev)}** `{finding.rule_id}` — {one_line(finding.title)}"
                     )
                     if finding.description:
-                        lines.append(f"  > {finding.description}")
+                        lines.extend(quoted_lines(finding.description))
                     loc = _loc(finding)
                     if loc:
                         lines.append(f"  > File: `{loc}`")
                     if finding.remediation:
-                        lines.append(f"  > **Remediation:** {finding.remediation}")
+                        lines.extend(quoted_lines(f"**Remediation:** {finding.remediation}"))
                 lines.append("")
                 lines.append("</details>")
                 lines.append("")
