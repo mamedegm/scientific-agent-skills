@@ -276,12 +276,16 @@ def _result_from_dict(data: dict) -> ScanResult:
         skill_name=data["name"],
         skill_directory=data["directory"],
         findings=[_finding_from_dict(f) for f in data.get("findings") or []],
+        suppressed_findings=[
+            _finding_from_dict(f) for f in data.get("suppressed_findings") or []
+        ],
         scan_duration_seconds=data.get("scan_duration_seconds") or 0.0,
         analyzers_used=data.get("analyzers_used") or [],
         analyzers_failed=data.get("analyzers_failed") or [],
         analyzability_score=data.get("analyzability_score"),
         analyzability_details=data.get("analyzability_details"),
         scan_metadata=data.get("scan_metadata"),
+        llm_usage=data.get("llm_usage"),
     )
 
 
@@ -332,6 +336,10 @@ def generate_json_report(report, skill_meta: dict | None = None,
                 "scan_metadata": result.scan_metadata,
                 "analyzability_details": result.analyzability_details,
                 "findings": [_finding_dict(f) for f in result.findings],
+                # Kept out of `findings` and the verdict, but carried so a reused
+                # result keeps its suppression decisions auditable.
+                "suppressed_findings": [_finding_dict(f) for f in result.suppressed_findings],
+                "llm_usage": result.llm_usage,
             }
             # Sorted so the committed JSON diffs cleanly regardless of the order
             # concurrent workers happen to finish in.
@@ -448,7 +456,9 @@ def scan_with_progress(
         report.add_scan_result(_result_from_dict(prior))
         skill_meta[d.name] = {
             "content_hash": hashes[d.name],
-            "last_scanned": prior.get("last_scanned") or prior.get("generated"),
+            # An entry from a report that predates `last_scanned` was scanned no
+            # later than that report was generated.
+            "last_scanned": prior.get("last_scanned") or previous.get("generated"),
             "reused": True,
         }
 

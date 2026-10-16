@@ -454,3 +454,61 @@ def test_format_comment_keeps_multiline_text_inside_the_finding(tmp_path):
     md = scan_pr_skills.format_comment(report, [tmp_path])
 
     assert _finding_block(md) == MULTILINE_LINES
+
+
+# --------------------------------------- fields carried by reused results
+
+
+def test_json_round_trip_keeps_suppressed_findings_and_llm_usage():
+    result = make_result("alpha", [make_finding()])
+    result.suppressed_findings = [make_finding(Severity.LOW, rule_id="R_SUPPRESSED", id="f-2")]
+    result.llm_usage = {"input_tokens": 1200, "output_tokens": 340}
+
+    data = json.loads(json.dumps(scan_skills.generate_json_report(make_report(result))))
+    rebuilt = scan_skills._result_from_dict(data["skills"][0])
+
+    assert [f.rule_id for f in rebuilt.suppressed_findings] == ["R_SUPPRESSED"]
+    assert rebuilt.suppressed_findings[0].severity == Severity.LOW
+    assert rebuilt.llm_usage == {"input_tokens": 1200, "output_tokens": 340}
+    # Suppressed findings stay out of the verdict.
+    assert [f.rule_id for f in rebuilt.findings] == ["RULE_1"]
+
+
+def test_json_round_trip_without_suppressed_findings_or_llm_usage():
+    data = scan_skills.generate_json_report(make_report(make_result("alpha")))
+    entry = data["skills"][0]
+
+    assert entry["suppressed_findings"] == []
+    assert entry["llm_usage"] is None
+    rebuilt = scan_skills._result_from_dict(entry)
+    assert rebuilt.suppressed_findings == []
+    assert rebuilt.llm_usage is None
+
+
+def test_result_from_older_report_entry_without_new_fields():
+    entry = {"name": "alpha", "directory": "skills/alpha", "findings": []}
+
+    rebuilt = scan_skills._result_from_dict(entry)
+
+    assert rebuilt.suppressed_findings == []
+    assert rebuilt.llm_usage is None
+
+
+def test_reused_skill_without_last_scanned_falls_back_to_previous_report_date(tmp_path, monkeypatch):
+    base = tmp_path / "skills"
+    skill = write_skill(base, "alpha")
+    monkeypatch.setattr(scan_skills, "build_scanner", lambda: pytest.fail("nothing to rescan"))
+    previous = {
+        "generated": "2026-02-03T04:05:06+00:00",
+        "skills": [{
+            "name": "alpha",
+            "directory": "skills/alpha",
+            "content_hash": scan_skills.content_hash(skill),
+            "findings": [],
+        }],
+    }
+
+    _, skill_meta, _ = scan_skills.scan_with_progress(FakeScanner(), str(base), previous=previous)
+
+    assert skill_meta["alpha"]["reused"] is True
+    assert skill_meta["alpha"]["last_scanned"] == "2026-02-03T04:05:06+00:00"
