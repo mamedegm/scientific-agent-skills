@@ -412,3 +412,45 @@ def test_pr_main_blocks_on_fail_on_severity(tmp_path, monkeypatch):
     comment = output.read_text()
     assert "**Skills scanned:** 2" in comment
     assert "| `beta` | 🔴 CRITICAL | 1 | ❌ |" in comment
+
+
+# ------------------------------------------------- multi-line finding text
+
+MULTILINE = dict(
+    title="Sends data\nto a remote host",
+    description="First paragraph.\n\nSecond paragraph.\n- not a list item",
+    remediation="Step 1.\r\nStep 2.",
+    line_number=None,
+)
+MULTILINE_LINES = [
+    "- **🟠 HIGH** `RULE_1` — Sends data to a remote host",
+    "  > First paragraph.",
+    "  >",
+    "  > Second paragraph.",
+    "  > - not a list item",
+    "  > File: `scripts/run.py`",
+    "  > **Remediation:** Step 1.",
+    "  > Step 2.",
+]
+
+
+def _finding_block(md):
+    lines = md.splitlines()
+    start = lines.index(MULTILINE_LINES[0])
+    return lines[start:start + len(MULTILINE_LINES)]
+
+
+def test_generate_report_keeps_multiline_text_inside_the_finding():
+    report = make_report(make_result("risky", [make_finding(**MULTILINE)]))
+
+    md = scan_skills.generate_report(report)
+
+    assert _finding_block(md) == MULTILINE_LINES
+
+
+def test_format_comment_keeps_multiline_text_inside_the_finding(tmp_path):
+    report = make_report(make_result("risky", [make_finding(**MULTILINE)]))
+
+    md = scan_pr_skills.format_comment(report, [tmp_path])
+
+    assert _finding_block(md) == MULTILINE_LINES
