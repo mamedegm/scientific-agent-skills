@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 from skill_scanner.core.loader import SkillLoadError
 from skill_scanner.core.models import Report
 
-from scan_skills import build_scanner, one_line, quoted_lines, severity_badge
+from scan_skills import build_scanner, finding_lines, severity_badge, sorted_by_severity
 
 load_dotenv()
 
@@ -103,15 +103,6 @@ def scan_skill_dirs(scanner, skill_dirs: list[Path]) -> Report:
     return report
 
 
-def _loc(finding) -> str | None:
-    if not finding.file_path:
-        return None
-    loc = finding.file_path
-    if finding.line_number:
-        loc += f":{finding.line_number}"
-    return loc
-
-
 def format_comment(report: Report, scanned_dirs: list[Path]) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines: list[str] = [COMMENT_MARKER, "## 🛡️ Skill Security Scan", ""]
@@ -159,20 +150,27 @@ def format_comment(report: Report, scanned_dirs: list[Path]) -> str:
                 )
                 lines.append("")
                 for finding in result.findings:
-                    fsev = _sev_str(finding)
-                    lines.append(
-                        f"- **{severity_badge(fsev)}** `{finding.rule_id}` — {one_line(finding.title)}"
-                    )
-                    if finding.description:
-                        lines.extend(quoted_lines(finding.description))
-                    loc = _loc(finding)
-                    if loc:
-                        lines.append(f"  > File: `{loc}`")
-                    if finding.remediation:
-                        lines.extend(quoted_lines(f"**Remediation:** {finding.remediation}"))
+                    lines.extend(finding_lines(finding))
                 lines.append("")
                 lines.append("</details>")
                 lines.append("")
+
+    # Counted in the totals above and considered by --fail-on, so listed here.
+    if report.cross_skill_findings:
+        cross = sorted_by_severity(report.cross_skill_findings)
+        n = len(cross)
+        lines.append("### Cross-skill findings")
+        lines.append("")
+        lines.append(
+            f"<details><summary>Across the scanned skills — "
+            f"{severity_badge(_sev_str(cross[0]))} ({n} finding{'s' if n != 1 else ''})</summary>"
+        )
+        lines.append("")
+        for finding in cross:
+            lines.extend(finding_lines(finding))
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
 
     if report.skills_skipped:
         lines.append("### Skipped")
@@ -192,6 +190,10 @@ def _should_block(report: Report, fail_on: str) -> tuple[bool, str | None]:
         sev = _sev_str(result)
         if sev in blocking_ranks:
             return True, f"{sev} finding(s) in {result.skill_name}"
+    for finding in report.cross_skill_findings:
+        sev = _sev_str(finding)
+        if sev in blocking_ranks:
+            return True, f"{sev} cross-skill finding(s) ({finding.rule_id})"
     return False, None
 
 
