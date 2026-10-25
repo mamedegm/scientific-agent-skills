@@ -283,6 +283,33 @@ def test_scan_with_progress_reuses_only_unchanged_skills(tmp_path, monkeypatch):
     assert report.skills_skipped[0]["reason"].startswith("SKIP (")
 
 
+def test_scan_with_progress_rescans_results_whose_llm_analysis_failed(tmp_path, monkeypatch):
+    base = tmp_path / "skills"
+    skills = {name: write_skill(base, name) for name in ("llm-error", "llm-marker", "static-error")}
+
+    def entry(name, **fields):
+        return {"name": name, "directory": f"skills/{name}",
+                "content_hash": scan_skills.content_hash(skills[name]), **fields}
+
+    failed = make_finding(Severity.INFO, rule_id="LLM_ANALYSIS_FAILED", analyzer="llm")
+    previous = {"skills": [
+        entry("llm-error", analyzers_failed=[{"analyzer": "llm_analyzer", "error": "429"}]),
+        entry("llm-marker", findings=[scan_skills._finding_dict(failed)]),
+        # A deterministic contract failure would recur on a rescan, so it is reused.
+        entry("static-error", analyzers_failed=[{"analyzer": "behavioral", "error": "contract"}]),
+    ]}
+    worker = FakeScanner()
+    monkeypatch.setattr(scan_skills, "build_scanner", lambda: worker)
+
+    _, skill_meta, run_meta = scan_skills.scan_with_progress(
+        FakeScanner(), str(base), workers=1, previous=previous
+    )
+
+    assert sorted(worker.scanned) == ["llm-error", "llm-marker"]
+    assert skill_meta["static-error"]["reused"] is True
+    assert run_meta["skills_reused"] == 1
+
+
 def test_scan_with_progress_missing_directory(tmp_path):
     with pytest.raises(FileNotFoundError):
         scan_skills.scan_with_progress(FakeScanner(), str(tmp_path / "nope"))
@@ -320,6 +347,31 @@ def test_generate_report_without_findings():
 
     assert "No findings to report — all skills passed." in md
     assert "**This run:** full rescan of all 1 skill(s)." in md
+
+
+def cross_skill_report():
+    report = make_report(make_result("alpha"), make_result("beta"))
+    report.add_cross_skill_findings([
+        make_finding(Severity.MEDIUM, rule_id="CROSS_SKILL_SHARED_URL", file_path=None,
+                     line_number=None, title="Skills share a URL"),
+        make_finding(Severity.HIGH, rule_id="CROSS_SKILL_DATA_RELAY", file_path=None,
+                     line_number=None, title="Potential data relay"),
+    ])
+    return report
+
+
+def test_generate_report_lists_the_cross_skill_findings_it_counts():
+    report = cross_skill_report()
+
+    md = scan_skills.generate_report(report)
+
+    assert "**Total findings:** 2" in md
+    assert "No per-skill findings. Cross-skill findings are listed below." in md
+    assert "No findings to report" not in md
+    assert "<details><summary>2 cross-skill findings</summary>" in md
+    high = md.index("- **🟠 HIGH** `CROSS_SKILL_DATA_RELAY` — Potential data relay")
+    medium = md.index("- **🟡 MEDIUM** `CROSS_SKILL_SHARED_URL` — Skills share a URL")
+    assert high < medium
 
 
 def test_severity_badge_unknown_value():
@@ -366,6 +418,29 @@ def test_should_block_uses_worst_severity(fail_on, blocked):
 
     assert got is blocked
     assert reason == ("MEDIUM finding(s) in m" if blocked else None)
+
+
+def test_format_comment_lists_cross_skill_findings(tmp_path):
+    md = scan_pr_skills.format_comment(cross_skill_report(), [tmp_path])
+
+    assert "### Cross-skill findings" in md
+    assert "<summary>Across the scanned skills — 🟠 HIGH (2 findings)</summary>" in md
+    assert "- **🟠 HIGH** `CROSS_SKILL_DATA_RELAY` — Potential data relay" in md
+
+
+@pytest.mark.parametrize(
+    ("fail_on", "reason"),
+    [
+        ("CRITICAL", None),
+        ("HIGH", "HIGH cross-skill finding(s) (CROSS_SKILL_DATA_RELAY)"),
+        ("MEDIUM", "MEDIUM cross-skill finding(s) (CROSS_SKILL_SHARED_URL)"),
+        ("NEVER", None),
+    ],
+)
+def test_should_block_counts_cross_skill_findings(fail_on, reason):
+    got = scan_pr_skills._should_block(cross_skill_report(), fail_on)
+
+    assert got == (reason is not None, reason)
 
 
 def test_pr_main_without_api_key_writes_skip_comment(tmp_path, monkeypatch):

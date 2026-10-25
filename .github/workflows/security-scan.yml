@@ -13,6 +13,13 @@ on:
 permissions:
   contents: write
 
+# Overlapping runs (the schedule and a manual dispatch) would both rewrite the
+# report and race to push it. Queue them instead: a queued run starts from the
+# report its predecessor pushed, so it never has to merge one.
+concurrency:
+  group: security-scan
+  cancel-in-progress: false
+
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -65,7 +72,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git stash --include-untracked
           git pull --rebase
-          git stash pop || true
+          # A conflict here means someone else changed the report meanwhile.
+          # Fail rather than commit the conflict markers; the next run rescans.
+          git stash pop
           git add docs/security-report.md docs/security-report.json
           git commit -m "chore: update security scan report [skip ci]"
           git push

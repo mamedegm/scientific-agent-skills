@@ -280,6 +280,23 @@ def test_existing_clone_revision_mismatch_is_not_mutated(args, tmp_path):
     assert "rev-parse" in run.call_args.args[0]
 
 
+@pytest.mark.skipif(mod.shutil.which("git") is None, reason="needs git")
+def test_existing_clone_at_annotated_tag_is_accepted(args, tmp_path):
+    args.checkout_dir = str(tmp_path)
+    target = tmp_path / args.repo_name
+    target.mkdir()
+    (target / "main.nf").write_text("workflow {}")
+    git = ["git", "-C", str(target), "-c", "user.name=t", "-c", "user.email=t@example.org"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "main.nf"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "release"], check=True)
+    subprocess.run([*git, "tag", "-a", "1.0.0", "-m", "annotated release"], check=True)
+    args.pipeline_version = "1.0.0"
+    mod.ensure_pipeline_repo(args)
+    assert args.pipeline == str(target.resolve())
+    assert args.pipeline_version == ""
+
+
 def test_local_repo_rejects_remote_revision_argument(args, tmp_path):
     (tmp_path / "main.nf").write_text("workflow {}")
     args.repo_path = str(tmp_path)

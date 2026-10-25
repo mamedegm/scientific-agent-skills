@@ -60,6 +60,13 @@ SCANNER_PACKAGE = "cisco-ai-skill-scanner"
 DEFAULT_WORKERS = 8
 DEFAULT_MAX_AGE_DAYS = 30
 
+# A failure of these analyzers says nothing about the skill -- it is a provider
+# error or a rate limit -- so a result they failed on is rescanned, not reused.
+RETRYABLE_ANALYZERS = {"llm_analyzer", "meta_analyzer"}
+RETRYABLE_RULES = {"LLM_ANALYSIS_FAILED"}
+
+SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "SAFE"]
+
 
 def scanner_version() -> str:
     try:
@@ -139,6 +146,27 @@ def quoted_lines(text: str) -> list[str]:
     return [f"  > {line}" if line else "  >" for line in text.splitlines() or [""]]
 
 
+def finding_lines(finding) -> list[str]:
+    """Render one finding as a Markdown list item with its details quoted."""
+    fsev = _enum_value(finding.severity)
+    lines = [f"- **{severity_badge(fsev)}** `{finding.rule_id}` — {one_line(finding.title)}"]
+    if finding.description:
+        lines.extend(quoted_lines(finding.description))
+    if finding.file_path:
+        loc = finding.file_path
+        if finding.line_number:
+            loc += f":{finding.line_number}"
+        lines.append(f"  > File: `{loc}`")
+    if finding.remediation:
+        lines.extend(quoted_lines(f"**Remediation:** {finding.remediation}"))
+    return lines
+
+
+def sorted_by_severity(findings) -> list:
+    """Most severe first; the sort is stable, so ties keep the scanner's order."""
+    return sorted(findings, key=lambda f: SEVERITY_ORDER.index(_enum_value(f.severity)))
+
+
 def generate_report(report, run_meta: dict | None = None) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     run_meta = run_meta or {}
@@ -181,9 +209,7 @@ def generate_report(report, run_meta: dict | None = None) -> str:
 
     sorted_results = sorted(
         report.scan_results,
-        key=lambda r: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "SAFE"].index(
-            r.max_severity.value if hasattr(r.max_severity, "value") else str(r.max_severity)
-        ),
+        key=lambda r: SEVERITY_ORDER.index(_enum_value(r.max_severity)),
     )
 
     for result in sorted_results:
@@ -206,25 +232,35 @@ def generate_report(report, run_meta: dict | None = None) -> str:
             lines.append("")
 
             for finding in result.findings:
-                fsev = finding.severity.value if hasattr(finding.severity, "value") else str(finding.severity)
-                lines.append(
-                    f"- **{severity_badge(fsev)}** `{finding.rule_id}` — {one_line(finding.title)}"
-                )
-                if finding.description:
-                    lines.extend(quoted_lines(finding.description))
-                if finding.file_path:
-                    loc = finding.file_path
-                    if finding.line_number:
-                        loc += f":{finding.line_number}"
-                    lines.append(f"  > File: `{loc}`")
-                if finding.remediation:
-                    lines.extend(quoted_lines(f"**Remediation:** {finding.remediation}"))
+                lines.extend(finding_lines(finding))
                 lines.append("")
 
     else:
         lines.append("## Detailed Findings")
         lines.append("")
-        lines.append("No findings to report — all skills passed.")
+        if report.cross_skill_findings:
+            lines.append("No per-skill findings. Cross-skill findings are listed below.")
+        else:
+            lines.append("No findings to report — all skills passed.")
+        lines.append("")
+
+    # Counted in the totals above, so they must be listed too, or the report's
+    # headline numbers cannot be reconciled with its contents.
+    if report.cross_skill_findings:
+        n = len(report.cross_skill_findings)
+        lines.append("## Cross-Skill Findings")
+        lines.append("")
+        lines.append(
+            "Patterns found across several skills together rather than inside one, "
+            "included in the totals above."
+        )
+        lines.append("")
+        lines.append(f"<details><summary>{n} cross-skill finding{'s' if n != 1 else ''}</summary>")
+        lines.append("")
+        for finding in sorted_by_severity(report.cross_skill_findings):
+            lines.extend(finding_lines(finding))
+            lines.append("")
+        lines.append("</details>")
         lines.append("")
 
     return "\n".join(lines)
@@ -360,6 +396,27 @@ def load_previous_report(path: str | None = None) -> dict | None:
         return None
 
 
+def reusable(prior: dict | None, current_hash: str) -> bool:
+    """Whether a previous report's entry may stand in for a fresh scan.
+
+    The skill's content must be unchanged, and the scan that produced the entry
+    must have completed. When the LLM analyzer failed, the scanner still returns
+    a result -- static analysis only -- and reusing it would keep that skill
+    without semantic analysis until its content changes or the age backstop
+    forces a full rescan.
+    """
+    if not prior or prior.get("content_hash") != current_hash:
+        return False
+    if any(
+        entry.get("analyzer") in RETRYABLE_ANALYZERS
+        for entry in prior.get("analyzers_failed") or []
+    ):
+        return False
+    return not any(
+        finding.get("rule_id") in RETRYABLE_RULES for finding in prior.get("findings") or []
+    )
+
+
 def cache_invalidation_reason(previous: dict | None, max_age_days: int) -> str | None:
     """Explain why the cache cannot be used, or None if it can.
 
@@ -433,8 +490,7 @@ def scan_with_progress(
     hashes = {d.name: content_hash(d) for d in skill_dirs}
     fresh_dirs, reuse_dirs = [], []
     for d in skill_dirs:
-        prior = cached.get(d.name)
-        if prior and prior.get("content_hash") == hashes[d.name]:
+        if reusable(cached.get(d.name), hashes[d.name]):
             reuse_dirs.append(d)
         else:
             fresh_dirs.append(d)
