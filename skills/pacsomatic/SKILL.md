@@ -4,7 +4,7 @@ description: Prepares and launches nf-core/pacsomatic matched tumor-normal PacBi
 license: MIT
 compatibility: Requires Python 3.10+ for the standard-library helper. Execution requires Bash, Nextflow >=24.04.2, a compatible Java runtime (current Nextflow supports Java 17-26), the selected container runtime and optionally a scheduler. Network access is needed for uncached pipeline code, plugins, references and containers.
 metadata:
-  version: "1.4"
+  version: "1.5"
   skill-author: Beifang Niu
   contributors: Haidong, Wenchao
   upstream-pipeline: https://github.com/nf-core/pacsomatic

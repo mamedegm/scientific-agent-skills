@@ -127,7 +127,9 @@ def ensure_pipeline_repo(args):
             if completed.returncode:
                 fail("Could not check out requested pipeline revision in the new clone.")
     elif args.pipeline_version:
-        result = subprocess.run(["git", "-C", str(target), "rev-parse", "HEAD", args.pipeline_version], capture_output=True, text=True)
+        # ^{commit} peels an annotated tag to its commit; without it rev-parse
+        # prints the tag object's id, which never equals HEAD.
+        result = subprocess.run(["git", "-C", str(target), "rev-parse", "HEAD", args.pipeline_version + "^{commit}"], capture_output=True, text=True)
         revisions = result.stdout.splitlines()
         if result.returncode or len(revisions) != 2 or revisions[0] != revisions[1]:
             fail("Existing checkout differs from --pipeline-version; select its revision explicitly outside this helper.")
